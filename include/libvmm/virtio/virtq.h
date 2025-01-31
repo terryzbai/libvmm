@@ -48,7 +48,7 @@
 /* The Guest uses this in avail->flags to advise the Host: don't interrupt me
  * when you consume a buffer.  It's unreliable, so it's simply an
  * optimization.  */
-#define virtq_AVAIL_F_NO_INTERRUPT  1
+#define VIRTQ_AVAIL_F_NO_INTERRUPT  1
 
 /* We support indirect buffer descriptors */
 #define VIRTQ_AVAIL_F_NO_INTERRUPT  28
@@ -57,7 +57,7 @@
  * at the end of the avail ring. Host should ignore the avail->flags field. */
 /* The Host publishes the avail index for which it expects a kick
  * at the end of the used ring. Guest should ignore the used->flags field. */
-#define VIRTIO_RING_F_EVENT_IDX     29
+#define VIRTIO_F_EVENT_IDX     29
 
 /* Virtio ring descriptors: 16 bytes.  These can chain together via "next". */
 struct virtq_desc {
@@ -74,7 +74,8 @@ struct virtq_desc {
 struct virtq_avail {
     uint16_t flags;
     uint16_t idx;
-    uint16_t ring[];
+    uint16_t ring[512];
+    uint16_t used_event;
 };
 
 /* u32 is used here for ids for padding reasons. */
@@ -88,7 +89,8 @@ struct virtq_used_elem {
 struct virtq_used {
     uint16_t flags;
     uint16_t idx;
-    struct virtq_used_elem ring[];
+    struct virtq_used_elem ring[512];
+    uint16_t avail_event;
 };
 
 struct virtq {

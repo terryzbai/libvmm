@@ -9,10 +9,13 @@
 #include <libvmm/virtio/net.h>
 #include <libvmm/virq.h>
 #include <libvmm/util/util.h>
+#include <sddf/util/printf.h>
 #include <sddf/network/queue.h>
 
+#include <sddf/benchmark/sel4bench.h>
+
 /* Uncomment this to enable debug logging */
-// #define DEBUG_NET
+#define DEBUG_NET
 
 #if defined(DEBUG_NET)
 #define LOG_NET(...) do{ printf("VIRTIO(NET): "); printf(__VA_ARGS__); }while(0)
@@ -22,6 +25,17 @@
 
 #define LOG_NET_ERR(...) do{ printf("VIRTIO(NET)|ERROR: "); printf(__VA_ARGS__); }while(0)
 
+uint32_t net_invocation_cnt;
+uint32_t net_no_buffer_cnt;
+/* uint32_t cycle_cnt; */
+
+uint32_t read_invocation_cnt() {
+    return net_invocation_cnt;
+}
+
+uint32_t read_no_buffer_cnt() {
+    return net_no_buffer_cnt;
+}
 
 static inline struct virtio_net_device *device_state(struct virtio_device *dev)
 {
@@ -30,7 +44,6 @@ static inline struct virtio_net_device *device_state(struct virtio_device *dev)
 
 static void virtio_net_reset(struct virtio_device *dev)
 {
-    LOG_NET("operation: reset\n");
     for (int i = 0; i < dev->num_vqs; i++) {
         dev->vqs[i].ready = false;
         dev->vqs[i].last_idx = 0;
@@ -54,7 +67,7 @@ static bool virtio_net_get_device_features(struct virtio_device *dev, uint32_t *
     switch (dev->data.DeviceFeaturesSel) {
     /* Feature bits 0 to 31 */
     case 0:
-        *features = BIT_LOW(VIRTIO_NET_F_MAC);
+        *features = (BIT_LOW(VIRTIO_NET_F_MAC)) | BIT_LOW(VIRTIO_F_EVENT_IDX);
         break;
     /* Features bits 32 to 63 */
     case 1:
@@ -76,7 +89,7 @@ static bool virtio_net_set_driver_features(struct virtio_device *dev, uint32_t f
     /* Feature bits 0 to 31 */
     case 0:
         /** F_MAC is required */
-        success = (features == BIT_LOW(VIRTIO_NET_F_MAC));
+        success = (features == BIT_LOW(VIRTIO_NET_F_MAC) | BIT_LOW(VIRTIO_F_EVENT_IDX));
         break;
 
     /* Features bits 32 to 63 */
@@ -113,7 +126,9 @@ static bool virtio_net_get_device_config(struct virtio_device *dev,
         *ret_val = config->mac[4];
         *ret_val |= config->mac[5] << 8;
         break;
-
+    case 3:
+        LOG_NET("any check?\n");
+        *ret_val = 256;
     default:
         LOG_NET_ERR("Unknown device config register: 0x%x\n", offset);
         return false;
@@ -172,6 +187,12 @@ static void handle_tx_msg(struct virtio_device *dev,
 
     struct virtq_desc *desc = &virtq->desc[desc_head];
 
+    /* uint8_t *desc_addr = (uint8_t *)desc->addr; */
+    /* for (uint32_t i = 0; i < desc->len; i++) { */
+        /* sddf_printf("%d ", desc_addr[i]); */
+    /* } */
+    /* sddf_printf("\n"); */
+
     while (dest_remaining > 0) {
         uint32_t skipping = 0;
         /* Work out how much of this descriptor must be skipped */
@@ -200,6 +221,7 @@ static void handle_tx_msg(struct virtio_device *dev,
     virtq_enqueue_used(virtq, desc_head, written);
     *respond_to_guest = true;
     *notify_tx_server = true;
+
     return;
 
 fail:
@@ -209,26 +231,31 @@ fail:
 
 static bool virtio_net_queue_notify(struct virtio_device *dev)
 {
+    /* sddf_printf("queue_notify %d\n", dev->data.QueueNotify); */
     struct virtio_net_device *state = device_state(dev);
 
     if (!driver_ok(dev)) {
         LOG_NET_ERR("Driver not ready\n");
         return false;
     }
-    if (dev->data.QueueSel != VIRTIO_NET_TX_VIRTQ) {
-        LOG_NET_ERR("Invalid queue\n");
-        return false;
-    }
+    /* if (dev->data.QueueNotify != VIRTIO_NET_TX_VIRTQ) { */
+        /* LOG_NET_ERR("Invalid queue\n"); */
+        /* return false; */
+    /* } */
     if (!dev->vqs[VIRTIO_NET_TX_VIRTQ].ready) {
         LOG_NET_ERR("TX virtq not ready\n");
         return false;
     }
+    net_no_buffer_cnt += 1;
 
     virtio_queue_handler_t *vq = &dev->vqs[VIRTIO_NET_TX_VIRTQ];
     struct virtq *virtq = &vq->virtq;
 
     uint16_t guest_idx = virtq->avail->idx;
     uint16_t idx = vq->last_idx;
+    uint16_t idx_start = idx;
+
+    /* sddf_printf("tx avail idx: %d, guest_idx: %d, avail_event: %d\n", idx, guest_idx, virtq->used->avail_event); */
 
     bool notify_tx_server = false;
     bool respond_to_guest = false;
@@ -237,6 +264,11 @@ static bool virtio_net_queue_notify(struct virtio_device *dev)
         uint16_t desc_head = virtq->avail->ring[idx % virtq->num];
         handle_tx_msg(dev, virtq, desc_head, &notify_tx_server, &respond_to_guest);
     }
+    virtq->used->avail_event = guest_idx;
+    /* virtq->used->avail_event = (guest_idx + 200) % virtq->num; */
+    /* if (guest_idx > 20) { */
+        /* virtq->used->avail_event = guest_idx + 5; */
+    /* } */
 
     vq->last_idx = idx;
 
@@ -245,12 +277,12 @@ static bool virtio_net_queue_notify(struct virtio_device *dev)
         microkit_notify(state->tx_ch);
     }
 
-    bool success = true;
-    if (respond_to_guest) {
-        success = virtio_net_respond(dev);
-    }
+    /* bool success = true; */
+    /* if (respond_to_guest) { */
+    /*     success = virtio_net_respond(dev); */
+    /* } */
 
-    return success;
+    return true;
 }
 
 static uint32_t copy_rx(struct virtq *virtq,
@@ -319,6 +351,22 @@ static void handle_rx_buffer(struct virtio_device *dev,
     *respond_to_guest = true;
 }
 
+bool rx_queue_full(struct virtio_device *dev)
+{
+    struct virtio_net_device *state = device_state(dev);
+
+    virtio_queue_handler_t *vq = &dev->vqs[VIRTIO_NET_RX_VIRTQ];
+    struct virtq *virtq = &vq->virtq;
+
+    uint16_t guest_idx = virtq->avail->idx;
+    uint16_t idx = vq->last_idx;
+
+    if (idx == guest_idx) {
+        return true;
+    }
+    return false;
+}
+
 bool virtio_net_handle_rx(struct virtio_net_device *state)
 {
     struct virtio_device *dev = &state->virtio_device;
@@ -336,7 +384,7 @@ bool virtio_net_handle_rx(struct virtio_net_device *state)
     bool respond_to_guest = false;
 
     while (reprocess) {
-        while (net_dequeue_active(&state->rx, &sddf_buffer) != -1) {
+        while (!rx_queue_full(dev) && net_dequeue_active(&state->rx, &sddf_buffer) != -1) {
             /* On failure, drop packet since we don't know how long until next interrupt */
             handle_rx_buffer(dev, sddf_buffer.io_or_offset, sddf_buffer.len, &respond_to_guest);
 
@@ -399,6 +447,8 @@ bool virtio_mmio_net_init(struct virtio_net_device *net_dev,
     net_dev->tx_data = (void *)tx_data;
     net_dev->rx_ch = rx_ch;
     net_dev->tx_ch = tx_ch;
+
+    set_pmu(false);
 
     return virtio_mmio_register_device(dev, region_base, region_size, virq);
 }

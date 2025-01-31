@@ -22,6 +22,12 @@
 //     return !CPSR_IS_THUMB(regs->spsr);
 // }
 
+static uint32_t fault_cnt;
+
+uint32_t read_fault_cnt() {
+    return fault_cnt;
+}
+
 bool fault_advance_vcpu(size_t vcpu_id, seL4_UserContext *regs)
 {
     // For now we just ignore it and continue
@@ -443,6 +449,7 @@ bool fault_handle(size_t vcpu_id, microkit_msginfo msginfo)
     bool success = false;
     switch (label) {
     case seL4_Fault_VMFault:
+        fault_cnt += 1;
         success = fault_handle_vm_exception(vcpu_id);
         break;
     case seL4_Fault_UnknownSyscall:

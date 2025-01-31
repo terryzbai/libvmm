@@ -1,0 +1,61 @@
+#!/bin/sh
+
+# Copyright 2025, UNSW
+#
+# SPDX-License-Identifier: BSD-2-Clause
+
+
+# devmem 0x170000 b 0x00 && \
+# sleep 2 && \
+# devmem 0x170000 b 0x01 && \
+# sleep 5 && \
+# devmem 0x170000 b 0x02
+
+devmem 0x170000 b 0x00 && \
+ifconfig eth0 up && \
+ifconfig && \
+sleep 5 && \
+udhcpc && \
+export PYTHONPATH=$PTHONPATH:/ipbench/usr/lib/python3.12/site-packages/ && \
+export LD_LIBRARY_PATH=/usr/lib
+
+/root/echoit &
+
+echoit_pid=$!
+
+echo "echoit PID: $echoit_pid"
+
+# perf
+
+finished=0
+(/ipbench/usr/bin/ipbenchd -d -t &> output.txt &) && \
+echo "Listening on the output.txt" && \
+while true; do
+    sleep 1
+    tail -f output.txt | while read -r line; do
+        # echo $line
+        if [[ "$line" == "\[run\] start" ]]; then
+            # echo "[SCRIPT]: notify bench PD to start"
+            devmem 0x170000 b 0x01
+            # perf record -F 99 -p $echoit_pid &
+            finished=1
+            # echo "set finished=1"
+            break
+        fi
+        if [[ "$line" == *"\[parse_common_opts\]: got line STOP"* ]]; then
+            # echo "[SCRIPT]: notify bench PD to stop"
+            kill $echoit_pid
+            devmem 0x170000 b 0x02
+            cat /proc/interrupts
+            break
+        fi
+     done
+
+    if [[ $finished == 1 ]]; then
+        echo "check finished=1"
+        break
+    fi
+done
+
+echo "finish"
+# perf report
